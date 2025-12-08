@@ -1,0 +1,7 @@
+.env
+data
+docs
+__pycache__
+venv
+vector_store.pkl
+*.db
