@@ -9,7 +9,7 @@ def get_agent():
 
 agent = get_agent()
 
-st.title("Toyota/Lexus Assistant 🚗")
+st.title("Toyota/Lexus Assistant")
 st.markdown("ask questions about Sales (SQL) or Contracts/Manuals (RAG).")
 
 # Example Buttons
@@ -21,8 +21,8 @@ with col2:
     if st.button("RAG: Warranty Europe"):
         st.session_state.query = "What is the standard Toyota warranty for Europe?"
 with col3:
-    if st.button("RAG: Tire Kit"):
-        st.session_state.query = "Where is the tire repair kit located for the UX?"
+    if st.button("RAG: child restraint system"):
+        st.session_state.query = "Should I have any consideration When installing a child restraint system to a front passenger seat?"
 with col4:
     if st.button("Hybrid: Sales vs Warranty"):
         st.session_state.query = "Compare Toyota vs Lexus SUV sales and summarize warranty differences."

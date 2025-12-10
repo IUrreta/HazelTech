@@ -8,22 +8,54 @@ import re
 from dotenv import load_dotenv
 from openai import OpenAI
 import hashlib
+from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+import requests 
 
-# Import pypdf
-try:
-    from pypdf import PdfReader
-    HAS_PYPDF = True
-except ImportError:
-    HAS_PYPDF = False
-    print("Warning: pypdf not found. PDF ingestion will be skipped.")
 
-# Import SentenceTransformer
-try:
-    from sentence_transformers import SentenceTransformer
-    HAS_SENTENCE_BERT = True
-except ImportError:
-    HAS_SENTENCE_BERT = False
-    print("Warning: sentence-transformers not found. Please install it.")
+MANUAL_SOURCES = [
+    {
+        "id": "rav4_da_om42841e",
+        "brand": "Toyota",
+        "model": "RAV4",
+        "year": 2019,
+        "url": "https://myportalcontent.toyota-europe.com/Manuals/Toyota/Rav4_DA_OM42841E.pdf",
+        "region": "EU",
+        "doc_type": "owner_manual",
+    },
+    {
+        "id": "yaris_hv_om52g10e",
+        "brand": "Toyota",
+        "model": "Yaris Hybrid",
+        "year": 2020,
+        "url": "https://myportalcontent.toyota-europe.com/Manuals/toyota/YARIS%2BHV_OM_Europe_OM52G10E.pdf",
+        "region": "EU",
+        "doc_type": "owner_manual",
+    },
+    {
+        "id": "auris_hv_touring_sports_om12j36e",
+        "brand": "Toyota",
+        "model": "Auris HV Touring Sports",
+        "year": 2014,
+        "url": "https://myportalcontent.toyota-europe.com/Manuals/toyota/AURIS%2BHV%2BTouring%2BSports_OM_EE_OM12J36E.pdf",
+        "region": "EU",
+        "doc_type": "owner_manual",
+    },
+]
+
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    # A veces ayuda indicar el referer de la propia herramienta:
+    "Referer": "https://www.toyota-europe.com/customer/manuals",
+}
+
+MANUAL_METADATA = {f"{m['id']}.pdf": m for m in MANUAL_SOURCES}
 
 DATA_DIR = "data"
 DOCS_DIR = "docs"
@@ -77,8 +109,6 @@ def generate_summary(text, filename):
 
 def extract_text_from_pdf(filepath):
     """Extracts text from a PDF file."""
-    if not HAS_PYPDF:
-        return "", 0
     
     text = ""
     pages = 0
@@ -96,10 +126,6 @@ def extract_text_from_pdf(filepath):
     return text, pages
 
 def build_vector_store():
-    if not HAS_SENTENCE_BERT:
-        print("Skipping Vector Store build: SentenceTransformer not installed.")
-        return
-
     print("Loading Embedding Model...")
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
@@ -116,38 +142,44 @@ def build_vector_store():
     def process_file(filepath, content, file_type, page_count=0):
         filename = os.path.basename(filepath)
         print(f"Processing {filename}...")
-        
+
         # 1. Summary
         summary = generate_summary(content, filename)
         summary_vec = model.encode(summary)
-        
+
         documents_map[filename] = {
             "summary": summary,
             "embedding": summary_vec,
             "page_count": page_count,
             "type": file_type
         }
-        
+
+        # Si es un manual conocido, añade metadata extra
+        meta = MANUAL_METADATA.get(filename)
+        if meta:
+            documents_map[filename].update({
+                "brand": meta.get("brand"),
+                "model": meta.get("model"),
+                "year": meta.get("year"),
+                "url": meta.get("url"),
+                "doc_type": meta.get("doc_type"),
+                "origin": "toyota_lexus_official"
+            })
+
         # 2. Chunking
-        # Split by [Page X] or double newlines
-        # For PDFs, let's try to split by some logic or just simple chunks. 
-        # Simple paragraph split:
         raw_chunks = [c.strip() for c in re.split(r'\n\s*\n', content) if len(c.strip()) > 50]
-        
+
         for i, chunk_text in enumerate(raw_chunks):
-            # clean up page markers slightly if they are alone? No, keep context.
-            
             chunk_vec = model.encode(chunk_text)
             chunk_id = hashlib.md5(f"{filename}_{i}".encode()).hexdigest()
-            
+
             chunks_list.append({
                 "chunk_id": chunk_id,
-                "doc_id": filename,
+                "doc_id": filename,  # <--- aquí el 'Source:' de tu RAG serán los filenames .pdf
                 "content": chunk_text,
                 "embedding": chunk_vec
             })
-            
-    # Process TXT
+
     for filepath in glob.glob(os.path.join(DOCS_DIR, "*.txt")):
         if os.path.basename(filepath) == "requirements.txt": continue # skip non-doc txts if any
         with open(filepath, "r", encoding='utf-8', errors='ignore') as f:
@@ -172,16 +204,50 @@ def build_vector_store():
     
     print(f"Vector Store saved. Docs: {len(documents_map)}, Chunks: {len(chunks_list)}")
 
+
+
+
+def fetch_manual_sample():
+    os.makedirs(DOCS_DIR, exist_ok=True)
+
+    for m in MANUAL_SOURCES:
+        filename = f"{m['id']}.pdf"
+        filepath = os.path.join(DOCS_DIR, filename)
+
+        if os.path.exists(filepath):
+            print(f"Manual already exists, skipping: {filename}")
+            continue
+
+        print(f"Downloading manual {m['brand']} {m['model']} from {m['url']} ...")
+        try:
+            resp = requests.get(m["url"], headers=REQUEST_HEADERS, timeout=30)
+            # Si Toyota devuelve 403 o lo que sea, raise_for_status lanza excepción
+            resp.raise_for_status()
+
+            with open(filepath, "wb") as f:
+                f.write(resp.content)
+
+            print(f"Saved manual to {filepath}")
+
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "unknown"
+            print(f"HTTP error {status} downloading {m['id']}: {e}")
+            if status == 403:
+                print(
+                    f" -> {filename} parece protegido (cookies/region/auth). "
+                    f"Para la demo, descárgalo manualmente desde la web y guárdalo "
+                    f"como {filepath}"
+                )
+        except Exception as e:
+            print(f"Failed to download {m['id']} from {m['url']}: {e}")
+
+
+
 if __name__ == "__main__":
-    # ingest_structured_data() # Skip to save time if not needed, but safe to run
-    # fetch_manual_sample() # Skip if already exists or run to ensure
     ingest_structured_data()
-    # Don't overwrite dynamic docs if possible, but for demo we can check exist
-    if not os.path.exists(os.path.join(DOCS_DIR, "Manual_Yaris_Cross.txt")):
-         print("Creating sample manual txt...")
-         # (Simple rewrite of fetch if needed, or just let existing implementation stand)
-         # Re-implementing simplified fetch for completeness of script:
-         with open(os.path.join(DOCS_DIR, "Manual_Yaris_Cross.txt"), "w") as f:
-            f.write("TOYOTA YARES CROSS MANUAL (SAMPLE)\n\n1. TIRE REPAIR KIT: Under deck board.")
-            
+
+    # 1) Descargar muestra de manuales oficiales (Toyota/Lexus)
+    fetch_manual_sample()
+
+    # 3) Construir índice RAG con contratos + warranty + manuales
     build_vector_store()
