@@ -151,8 +151,8 @@ streamlit run app.py
 ## 5. Design Trade-offs (Short)
 
 **Latency**
-+ Local embeddings + SQLite  
-– LLM calls (router, SQL, synthesis)
++ Local embeddings
++ SQLite  
 
 **Cost**
 + No embedding API cost  
